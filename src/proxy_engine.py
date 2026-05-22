@@ -143,7 +143,7 @@ class ProxyEngine:
         # Internal queues
         self.warm_heap = []       # min-heap: (release_timestamp, (ip, port))
         self.prison_dict = {}     # (ip, port) -> release_timestamp
-        self.cold_list = deque()  # FIX: deque for O(1) popleft instead of list pop(0)
+        self.cold_list = deque()  # deque for O(1) popleft
 
         # Validated pool: min-heap by response_time
         self.validated_heap = []  # (response_time, (ip, port))
@@ -269,7 +269,7 @@ class ProxyEngine:
 
             # Priority 3: Cold
             if self.cold_list:
-                return self.cold_list.popleft()  # FIX: O(1) with deque
+                return self.cold_list.popleft()
 
             return None
 
@@ -478,7 +478,7 @@ class ProxyEngine:
                         if ":" not in rest:
                             continue
                         ip, port = rest.split(":", 1)
-                        pid = (ip, int(port))  # FIX: int port to match scraper pids
+                        pid = (ip, int(port))
                         self.connected_set.add(pid)
                         self.proxy_map[pid] = {"url": line, "protocol": proto, "fail_count": 0}
                         heapq.heappush(self.warm_heap, (0, pid))
@@ -498,8 +498,8 @@ class ProxyEngine:
                         if ":" not in rest:
                             continue
                         ip, port = rest.split(":", 1)
-                        pid = (ip, int(port))  # FIX: int port to match scraper pids
-                        if pid not in self.connected_set and pid not in self.unconnected_set:  # FIX: check both sets
+                        pid = (ip, int(port))
+                        if pid not in self.connected_set and pid not in self.unconnected_set:
                             self.unconnected_set.add(pid)
                             self.proxy_map[pid] = {"url": line, "protocol": proto, "fail_count": 0}
                             self.cold_list.append(pid)

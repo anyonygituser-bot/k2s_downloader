@@ -23,6 +23,7 @@ API_HEADERS = {
 
 
 class Minter:
+
     def __init__(self, engine):
         self.engine = engine
         self.status = "Idle"
@@ -38,8 +39,8 @@ class Minter:
     def mint(self, file_id, target_tokens=250):
         self.file_id = file_id
         self.total_to_mint = target_tokens
-
         self.status = "Checking cache..."
+
         cached = self._load_cache(file_id)
         if cached:
             self.tokens = cached
@@ -48,10 +49,12 @@ class Minter:
                 self.status = "Complete"
                 print(f"[Minter] Loaded {len(cached)} tokens from cache!")
                 return len(self.tokens)
+
             print(f"[Minter] Found {len(cached)} cached tokens. Minting {self.total_to_mint - len(cached)} more...")
 
         try:
             while len(self.tokens) < self.total_to_mint:
+
                 # ── PHASE 1: CAPTCHA (retry 3x for hiccups) ──
                 captcha_data = None
                 for captcha_attempt in range(3):
@@ -68,6 +71,7 @@ class Minter:
 
                 self.status = "Showing captcha..."
                 self._open_image(captcha_data['url'])
+
                 captcha_answer = input("\n> Enter captcha: ")
 
                 free_download_key = None
@@ -161,6 +165,7 @@ class Minter:
                             self.engine.report_drop(used_proxy_id)
                             print("\n[Minter] Proxy died or key expired during minting. Will get new captcha/proxy.")
                             break
+
                     else:
                         # Direct URL case: save as 1 token, try next proxy
                         if reason == "Direct Link":
@@ -262,12 +267,10 @@ class Minter:
                 token_objects = data[file_id].get('tokens', [])
                 now = time.time()
                 alive = [t for t in token_objects if now < t.get('expiry', 0)]
-
                 if len(alive) < len(token_objects):
                     print(f"[Minter] Cleaned {len(token_objects) - len(alive)} expired tokens from cache.")
                     data[file_id]['tokens'] = alive
                     self._atomic_write(TOKEN_CACHE_FILE, data)
-
                 if alive:
                     return alive
         except Exception:
@@ -284,7 +287,6 @@ class Minter:
                     data = json.load(f)
             except Exception:
                 pass
-
         now = time.time()
         alive = [t for t in self.tokens if now < t.get('expiry', 0)]
         self.tokens = alive
@@ -333,7 +335,6 @@ class Minter:
             if d.get('status') == 'success':
                 wait_time = d.get('time_wait', 0)
                 free_key = d.get('free_download_key')
-
                 # Direct URL returned
                 direct_url = d.get('url')
                 if direct_url and not free_key:
@@ -352,23 +353,18 @@ class Minter:
             # ── ERROR ──
             if d.get('status') == 'error':
                 message = d.get('message', '').lower()
-
                 # Invalid captcha (wrong answer OR expired)
                 if 'invalid captcha' in message:
                     return None, None, True, "Invalid captcha"
-
                 # Captcha/challenge related (expired, used, etc)
                 if 'captcha' in message or 'challenge' in message:
                     return None, None, True, f"Captcha Issue: {d.get('message')}"
-
                 # Rate limit / cooldown
                 if 'wait' in message or 'limit' in message or 'cooldown' in message:
                     return None, None, False, "RATE_LIMITED"
-
                 # IP blocked / banned / geo
                 if 'block' in message or 'ban' in message or 'geo' in message:
                     return None, None, False, "BANNED"
-
                 return None, None, False, f"API Error: {d.get('message')}"
 
             return None, None, False, f"Unknown response (HTTP {r.status_code})"
@@ -391,12 +387,10 @@ class Minter:
                 for attempt in range(3):
                     if proxy_dead.is_set():
                         return
-
                     try:
                         payload = {"file_id": file_id, "free_download_key": free_download_key}
                         r = requests.post(f"{K2S_API}/getUrl", json=payload, proxies=proxy_dict,
                                           timeout=10, verify=False, headers=API_HEADERS)
-
                         if r.status_code == 200:
                             d = r.json()
                             url = d.get('url')
@@ -420,7 +414,6 @@ class Minter:
                                 return
                     except Exception:
                         pass
-
                 if not success:
                     proxy_dead.set()
                     return
@@ -430,10 +423,8 @@ class Minter:
             t = threading.Thread(target=mint_worker, daemon=True)
             t.start()
             threads.append(t)
-
         for t in threads:
             t.join()
-
         return not proxy_dead.is_set()
 
     # ════════════════ UTILITIES ════════════════
@@ -451,7 +442,6 @@ class Minter:
             r = requests.get(url, timeout=10, verify=True)
             with open(filepath, "wb") as f:
                 f.write(r.content)
-
             if platform.system() == 'Windows':
                 os.startfile(filepath)
             elif platform.system() == 'Darwin':

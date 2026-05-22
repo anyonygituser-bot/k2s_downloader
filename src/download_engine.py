@@ -19,7 +19,7 @@ CONNECT_TIMEOUT = 5
 READ_TIMEOUT = 15
 WAVE_INTERVAL = 15
 WAVE_SIZE = 5
-WAVE_HEALTH_THRESHOLD = 0.6
+WAVE_HEALTH_THRESHOLD = 1.0  # 100% of workers must be downloading before expanding
 STATE_SAVE_INTERVAL = 5
 TOKEN_EXPIRY = 24 * 3600  # 24 hours
 
@@ -35,7 +35,7 @@ class DownloadEngine:
 
         # Token-IP binding
         self.ip_to_token = {}      # {ip: token_url}
-        self.binding_times = {}    # {ip: timestamp}  — when the marriage happened
+        self.binding_times = {}    # {ip: timestamp}
         self.binding_lock = threading.Lock()
 
         # Worker tracking
@@ -69,7 +69,6 @@ class DownloadEngine:
                     continue
 
                 if now - bound_time >= TOKEN_EXPIRY:
-                    # Token expired — don't load this binding
                     expired_count += 1
                     continue
 
@@ -79,7 +78,6 @@ class DownloadEngine:
 
             if expired_count > 0:
                 print(f"[Downloader] Dropped {expired_count} expired bindings.")
-                # Re-save without expired ones
                 self._save_bindings_file()
 
             if bound_urls:
@@ -115,12 +113,19 @@ class DownloadEngine:
             tmp = BINDINGS_FILE + ".tmp"
             with open(tmp, "w") as f:
                 json.dump(data, f, indent=2)
-            os.replace(tmp, BINDINGS_FILE)
+            for attempt in range(3):
+                try:
+                    os.replace(tmp, BINDINGS_FILE)
+                    return
+                except PermissionError:
+                    if attempt < 2:
+                        time.sleep(0.1)
+                    else:
+                        raise
         except Exception as e:
             print(f"[Downloader] Bindings save error: {e}")
 
     def _is_binding_expired(self, ip):
-        """Check if a binding's token has expired."""
         bound_time = self.binding_times.get(ip, 0)
         return time.time() - bound_time >= TOKEN_EXPIRY
 
@@ -130,10 +135,9 @@ class DownloadEngine:
         """Pre-allocate file and load bindings. Returns set of bound token URLs."""
         os.makedirs(_DATA_DIR, exist_ok=True)
 
-        # Load bindings from disk first
         bound_urls = self._load_bindings()
 
-        # Remove bound tokens from state_manager pool (resume case)
+        # Remove bound tokens from state_manager pool
         for url in bound_urls:
             self.state_manager.mark_token_dead(url)
 
@@ -157,19 +161,16 @@ class DownloadEngine:
     def start(self):
         self.is_running = True
 
-        # Start monitor
         monitor = threading.Thread(target=self._monitor, daemon=True)
         monitor.start()
         self.worker_threads.append(monitor)
 
-        # Launch initial wave
         initial = min(WAVE_SIZE, self.thread_count)
         for _ in range(initial):
             self._launch_worker()
 
         print(f"[Downloader] Started wave 1: {initial} workers. Target: {self.thread_count}.")
 
-        # Wait for all threads
         for t in self.worker_threads:
             t.join()
 
@@ -256,7 +257,7 @@ class DownloadEngine:
         proxy_ip = None
         token = None
         chunk_id = None
-        married = False  # Is this proxy-token pair married?
+        married = False
 
         while self.is_running:
             if self.state_manager.is_download_complete():
@@ -281,13 +282,11 @@ class DownloadEngine:
                     token = self.ip_to_token.get(proxy_ip)
 
                 if token:
-                    # Binding exists — check if expired
                     if self._is_binding_expired(proxy_ip):
                         print(f"[Downloader] Binding expired for {proxy_ip}. Getting fresh token.")
                         self._remove_binding(proxy_ip)
                         token = None
                     else:
-                        # Valid binding — already married
                         married = True
 
                 if not token:
@@ -300,10 +299,9 @@ class DownloadEngine:
                         self._update_worker_state(worker_id, "waiting_token")
                         time.sleep(2)
                         continue
-                    # Dating — not married yet
                     married = False
 
-            # ── GET CHUNK (only if we don't have one) ──
+            # ── GET CHUNK ──
             if chunk_id is None:
                 chunk_id = self.state_manager.get_next_chunk()
 
@@ -331,7 +329,7 @@ class DownloadEngine:
                 worker_id, chunk_id, resume_byte, start, end, proxy_url, token
             )
 
-            # ── CHECK MARRIAGE (first byte = marriage criteria) ──
+            # ── MARRIAGE CHECK (first byte = married) ──
             if not married and got_first_byte:
                 with self.binding_lock:
                     self.ip_to_token[proxy_ip] = token
@@ -346,41 +344,33 @@ class DownloadEngine:
                     ws["chunks_completed"] += 1
                 chunk_id = None
                 time.sleep(0.5)
-                # Keep proxy + token + marriage, loop for next chunk
 
             elif result == "409":
-                # Token dead — remove binding, burn token
                 self.state_manager.release_chunk(chunk_id)
                 self.state_manager.mark_token_dead(token)
                 self._remove_binding(proxy_ip)
                 token = None
                 chunk_id = None
-                # Keep proxy
 
             elif result == "already_done":
-                # Another worker finished this chunk first
                 self.state_manager.release_chunk(chunk_id)
                 self._update_worker_state(worker_id, "finished")
                 chunk_id = None
                 time.sleep(0.3)
-                # Keep proxy + token
 
             else:
-                # Proxy died or speed issue
                 self._update_worker_state(worker_id, "disconnected")
                 self.engine.report_drop(proxy_id)
 
                 if not married:
-                    # Not married — return token to pool, no harm done
+                    # Not married — return token to pool
                     self.state_manager.return_token(token)
-                # If married: binding stays on disk (permanent marriage)
 
                 proxy_url = None
                 proxy_id = None
                 proxy_ip = None
                 token = None
                 married = False
-                # chunk_id stays — will resume with new proxy
                 time.sleep(RECOVERY_COOLDOWN)
 
         # ── CLEANUP ──
@@ -503,13 +493,14 @@ class DownloadEngine:
                 self.is_running = False
                 break
 
+            # Wave expansion — only when ALL previous workers are downloading
             if self.workers_launched < self.thread_count:
                 with self.lock:
-                    healthy = sum(1 for ws in self.worker_stats.values()
-                                  if ws["state"] == "downloading")
+                    downloading = sum(1 for ws in self.worker_stats.values()
+                                      if ws["state"] == "downloading")
                     launched = self.workers_launched
 
-                if launched > 0 and healthy / launched >= WAVE_HEALTH_THRESHOLD:
+                if launched > 0 and downloading == launched:
                     next_wave = min(WAVE_SIZE, self.thread_count - self.workers_launched)
                     if next_wave > 0:
                         for _ in range(next_wave):
@@ -526,7 +517,6 @@ class DownloadEngine:
         with self.binding_lock:
             self.ip_to_token.clear()
             self.binding_times.clear()
-        # Clean up bindings file — download is done
         if os.path.exists(BINDINGS_FILE):
             try:
                 os.remove(BINDINGS_FILE)

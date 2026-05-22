@@ -266,6 +266,7 @@ def main():
         return
     print()
 
+    # Import after requirements confirmed
     import requests
     import urllib3
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -351,12 +352,10 @@ def main():
         state.init_download(file_id, file_name, file_size, chunk_size)
         print(f"  Fresh start. {state.total_chunks} chunks.")
 
-    dl = DownloadEngine(state, engine, thread_count)
-    bound_urls = dl.setup()  # loads bindings, returns married token URLs
-
-    # Only unmarried tokens go into the pool
-    tokens = [t for t in tokens if t not in bound_urls]
     state.add_tokens(tokens)
+
+    dl = DownloadEngine(state, engine, thread_count)
+    dl.setup()
 
     start_time = time.time()
 
@@ -374,6 +373,7 @@ def main():
 
         dl_thread.join()
 
+        # Final display
         os.system('cls' if os.name == 'nt' else 'clear')
         print(format_dashboard(dl, engine, start_time))
         sys.stdout.flush()
