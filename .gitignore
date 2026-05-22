@@ -1,0 +1,7 @@
+.qodo/
+.venv/
+New folder/
+data/
+__pycache__/
+*.pyc
+.tmp
