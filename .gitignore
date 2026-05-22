@@ -1,5 +1,6 @@
 .qodo/
 .venv/
+.idea/
 New folder/
 data/
 __pycache__/
